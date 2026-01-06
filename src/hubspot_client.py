@@ -614,6 +614,72 @@ class HubSpotClient:
         logger.info("Completed task", task_id=task_id, status=result.get("properties", {}).get("hs_task_status"))
         return result
 
+    async def update_task(
+        self,
+        task_id: str,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        status: Optional[str] = None,
+        priority: Optional[str] = None,
+        assigned_to_user_id: Optional[str] = None,
+        due_date: Optional[str] = None,
+        task_type: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Update an existing task with new property values.
+
+        Args:
+            task_id: The HubSpot task ID to update (required)
+            title: New task title (optional)
+            description: New task description/body (optional)
+            status: Task status - NOT_STARTED, IN_PROGRESS, COMPLETED, WAITING, DEFERRED (optional)
+            priority: Task priority - HIGH, MEDIUM, or LOW (optional)
+            assigned_to_user_id: HubSpot user ID to reassign task to (optional)
+            due_date: New due date in ISO format (optional)
+            task_type: Type of task - TODO, CALL, EMAIL, etc. (optional)
+
+        Returns:
+            Updated task object with new property values
+
+        Examples:
+            - Update title: task_id="123", title="Updated title"
+            - Change priority and status: task_id="123", priority="HIGH", status="IN_PROGRESS"
+            - Reassign task: task_id="123", assigned_to_user_id="456"
+        """
+        logger.info("Updating task", task_id=task_id)
+
+        # Build properties to update
+        properties = {}
+
+        if title is not None:
+            properties["hs_task_subject"] = title
+        if description is not None:
+            properties["hs_task_body"] = description
+        if status is not None:
+            properties["hs_task_status"] = status
+        if priority is not None:
+            properties["hs_task_priority"] = priority
+        if assigned_to_user_id is not None:
+            properties["hubspot_owner_id"] = assigned_to_user_id
+        if task_type is not None:
+            properties["hs_task_type"] = task_type
+        if due_date is not None:
+            properties["hs_timestamp"] = str(self._convert_iso_to_timestamp(due_date))
+
+        # Ensure we have at least one property to update
+        if not properties:
+            raise HubSpotError("At least one property must be provided to update", "VALIDATION_ERROR")
+
+        data = {
+            "properties": properties
+        }
+
+        endpoint = f"/crm/v3/objects/tasks/{task_id}"
+        result = await self._make_request("PATCH", endpoint, data=data)
+
+        logger.info("Updated task", task_id=task_id, updated_properties=list(properties.keys()))
+        return result
+
     async def get_deal_meetings(
         self,
         deal_id: str,
@@ -796,12 +862,13 @@ class HubSpotClient:
         props = meeting.get("properties", {})
 
         # Check external URL for Calendly indicators
-        external_url = props.get("hs_meeting_external_url", "").lower()
+        # FIXED: Use (value or "") pattern to handle None values
+        external_url = (props.get("hs_meeting_external_url") or "").lower()
         if "calendly.com" in external_url:
             return True
 
         # Check meeting title for Calendly patterns
-        title = props.get("hs_meeting_title", "").lower()
+        title = (props.get("hs_meeting_title") or "").lower()
         calendly_patterns = [
             "calendly",
             "quick call",
@@ -816,7 +883,7 @@ class HubSpotClient:
             return True
 
         # Check location for virtual meeting indicators that might be automated
-        location = props.get("hs_meeting_location", "").lower()
+        location = (props.get("hs_meeting_location") or "").lower()
         if location and any(indicator in location for indicator in ["calendly", "automated", "zoom.us/j/"]):
             return True
 
@@ -974,6 +1041,491 @@ class HubSpotClient:
         result = await self._make_request("POST", endpoint, data=search_data)
 
         logger.info("Found meetings", search_term=search_term, count=len(result.get("results", [])))
+        return result
+
+    async def search_deals_by_name(
+        self,
+        deal_name: str,
+        limit: int = 10
+    ) -> Dict[str, Any]:
+        """
+        Search for deals by name using fuzzy matching.
+
+        Args:
+            deal_name: The deal name to search for
+            limit: Number of results to return (default: 10)
+
+        Returns:
+            Collection of matching deals sorted by most recently modified
+        """
+        logger.info("Searching deals by name", deal_name=deal_name, limit=limit)
+
+        search_data = {
+            "filterGroups": [
+                {
+                    "filters": [
+                        {
+                            "propertyName": "dealname",
+                            "operator": "CONTAINS_TOKEN",
+                            "value": deal_name
+                        }
+                    ]
+                }
+            ],
+            "properties": [
+                "dealname",
+                "dealstage",
+                "amount",
+                "closedate",
+                "pipeline",
+                "hs_lastmodifieddate",
+                "hs_createdate",
+                "hubspot_owner_id"
+            ],
+            "sorts": [
+                {
+                    "propertyName": "hs_lastmodifieddate",
+                    "direction": "DESCENDING"
+                }
+            ],
+            "limit": limit
+        }
+
+        endpoint = "/crm/v3/objects/deals/search"
+        result = await self._make_request("POST", endpoint, data=search_data)
+
+        logger.info("Found deals by name", deal_name=deal_name, count=len(result.get("results", [])))
+        return result
+
+    async def search_contacts(
+        self,
+        contact_name: Optional[str] = None,
+        contact_email: Optional[str] = None,
+        limit: int = 10
+    ) -> Dict[str, Any]:
+        """
+        Search for contacts by name or email.
+
+        Args:
+            contact_name: Contact name to search for (searches firstname and lastname)
+            contact_email: Contact email to search for (exact match)
+            limit: Number of results to return (default: 10)
+
+        Returns:
+            Collection of matching contacts sorted by most recently modified
+        """
+        logger.info("Searching contacts", contact_name=contact_name, contact_email=contact_email, limit=limit)
+
+        filters = []
+
+        if contact_email:
+            # Exact match for email
+            filters.append({
+                "propertyName": "email",
+                "operator": "EQ",
+                "value": contact_email
+            })
+        elif contact_name:
+            # Use query parameter for name search across multiple fields
+            search_data = {
+                "query": contact_name,
+                "properties": [
+                    "firstname",
+                    "lastname",
+                    "email",
+                    "phone",
+                    "company",
+                    "hs_lastmodifieddate",
+                    "hs_createdate",
+                    "hubspot_owner_id"
+                ],
+                "sorts": [
+                    {
+                        "propertyName": "hs_lastmodifieddate",
+                        "direction": "DESCENDING"
+                    }
+                ],
+                "limit": limit
+            }
+
+            endpoint = "/crm/v3/objects/contacts/search"
+            result = await self._make_request("POST", endpoint, data=search_data)
+
+            logger.info("Found contacts by name", contact_name=contact_name, count=len(result.get("results", [])))
+            return result
+
+        # Email search path
+        search_data = {
+            "filterGroups": [{"filters": filters}],
+            "properties": [
+                "firstname",
+                "lastname",
+                "email",
+                "phone",
+                "company",
+                "hs_lastmodifieddate",
+                "hs_createdate",
+                "hubspot_owner_id"
+            ],
+            "sorts": [
+                {
+                    "propertyName": "hs_lastmodifieddate",
+                    "direction": "DESCENDING"
+                }
+            ],
+            "limit": limit
+        }
+
+        endpoint = "/crm/v3/objects/contacts/search"
+        result = await self._make_request("POST", endpoint, data=search_data)
+
+        logger.info("Found contacts by email", contact_email=contact_email, count=len(result.get("results", [])))
+        return result
+
+    async def get_tasks_for_deal(
+        self,
+        deal_id: Optional[str] = None,
+        deal_name: Optional[str] = None,
+        include_completed: bool = False,
+        limit: int = 100
+    ) -> Dict[str, Any]:
+        """
+        Get tasks associated with a deal, with optional fuzzy name matching.
+
+        Args:
+            deal_id: The HubSpot deal ID (optional if deal_name provided)
+            deal_name: Deal name to search for (optional if deal_id provided)
+            include_completed: Include completed tasks (default: False)
+            limit: Number of tasks to retrieve (default: 100)
+
+        Returns:
+            Collection of tasks associated with the deal, including deal information
+        """
+        logger.info("Getting tasks for deal", deal_id=deal_id, deal_name=deal_name, include_completed=include_completed)
+
+        # If deal_name provided, search for the deal first
+        if not deal_id and deal_name:
+            deals_result = await self.search_deals_by_name(deal_name, limit=5)
+            deals = deals_result.get("results", [])
+
+            if not deals:
+                logger.info("No deals found matching name", deal_name=deal_name)
+                return {
+                    "results": [],
+                    "total": 0,
+                    "deal_info": None,
+                    "message": f"No deals found matching '{deal_name}'"
+                }
+
+            # Take the most recently modified deal (first result)
+            deal_id = deals[0]["id"]
+            deal_info = deals[0]
+            logger.info("Found matching deal", deal_id=deal_id, deal_name=deal_info.get("properties", {}).get("dealname"))
+        elif deal_id:
+            # Get deal info for context
+            try:
+                endpoint = f"/crm/v3/objects/deals/{deal_id}"
+                params = {"properties": "dealname,dealstage,amount,closedate,pipeline,hs_lastmodifieddate"}
+                deal_info = await self._make_request("GET", endpoint, params=params)
+            except HubSpotError as e:
+                logger.warning("Failed to get deal info", deal_id=deal_id, error=str(e))
+                deal_info = {"id": deal_id}
+        else:
+            raise HubSpotError("Either deal_id or deal_name must be provided", "VALIDATION_ERROR")
+
+        # Build task search filters
+        filters = [
+            {
+                "propertyName": "associations.deal",
+                "operator": "EQ",
+                "value": deal_id
+            }
+        ]
+
+        # Filter out completed tasks unless requested
+        if not include_completed:
+            filters.append({
+                "propertyName": "hs_task_status",
+                "operator": "NEQ",
+                "value": "COMPLETED"
+            })
+
+        search_data = {
+            "filterGroups": [{"filters": filters}],
+            "properties": [
+                "hs_task_subject",
+                "hs_task_body",
+                "hs_task_status",
+                "hs_task_priority",
+                "hubspot_owner_id",
+                "hs_task_type",
+                "hs_timestamp",
+                "hs_createdate",
+                "hs_task_due_date"
+            ],
+            "sorts": [
+                {
+                    "propertyName": "hs_timestamp",
+                    "direction": "ASCENDING"
+                }
+            ],
+            "limit": min(limit, 100)
+        }
+
+        endpoint = "/crm/v3/objects/tasks/search"
+        result = await self._make_request("POST", endpoint, data=search_data)
+
+        # Add overdue status to tasks
+        if "results" in result:
+            current_time = datetime.now().timestamp() * 1000
+            for task in result["results"]:
+                task_props = task.get("properties", {})
+                due_date = task_props.get("hs_task_due_date") or task_props.get("hs_timestamp")
+                task["is_overdue"] = False
+                task["overdue_days"] = 0
+
+                if due_date and task_props.get("hs_task_status") not in ["COMPLETED", "DEFERRED"]:
+                    try:
+                        due_date_ms = int(due_date)
+                        if current_time > due_date_ms:
+                            task["is_overdue"] = True
+                            overdue_ms = current_time - due_date_ms
+                            task["overdue_days"] = int(overdue_ms / (24 * 60 * 60 * 1000))
+                    except (ValueError, TypeError):
+                        pass
+
+        result["deal_info"] = deal_info
+        result["total"] = len(result.get("results", []))
+
+        logger.info("Retrieved tasks for deal", deal_id=deal_id, count=result["total"])
+        return result
+
+    async def get_tasks_for_contact(
+        self,
+        contact_id: Optional[str] = None,
+        contact_name: Optional[str] = None,
+        contact_email: Optional[str] = None,
+        include_completed: bool = False,
+        limit: int = 100
+    ) -> Dict[str, Any]:
+        """
+        Get tasks associated with a contact, with optional name/email matching.
+
+        Args:
+            contact_id: The HubSpot contact ID (optional if contact_name/email provided)
+            contact_name: Contact name to search for (optional if contact_id provided)
+            contact_email: Contact email to search for (optional if contact_id provided)
+            include_completed: Include completed tasks (default: False)
+            limit: Number of tasks to retrieve (default: 100)
+
+        Returns:
+            Collection of tasks associated with the contact, including contact information
+        """
+        logger.info("Getting tasks for contact", contact_id=contact_id, contact_name=contact_name,
+                   contact_email=contact_email, include_completed=include_completed)
+
+        # If contact_name or contact_email provided, search for the contact first
+        if not contact_id and (contact_name or contact_email):
+            contacts_result = await self.search_contacts(contact_name=contact_name, contact_email=contact_email, limit=5)
+            contacts = contacts_result.get("results", [])
+
+            if not contacts:
+                search_term = contact_email or contact_name
+                logger.info("No contacts found matching search", search_term=search_term)
+                return {
+                    "results": [],
+                    "total": 0,
+                    "contact_info": None,
+                    "message": f"No contacts found matching '{search_term}'"
+                }
+
+            # Take the most recently modified contact (first result)
+            contact_id = contacts[0]["id"]
+            contact_info = contacts[0]
+            logger.info("Found matching contact", contact_id=contact_id,
+                       email=contact_info.get("properties", {}).get("email"))
+        elif contact_id:
+            # Get contact info for context
+            try:
+                endpoint = f"/crm/v3/objects/contacts/{contact_id}"
+                params = {"properties": "firstname,lastname,email,phone,company,hs_lastmodifieddate"}
+                contact_info = await self._make_request("GET", endpoint, params=params)
+            except HubSpotError as e:
+                logger.warning("Failed to get contact info", contact_id=contact_id, error=str(e))
+                contact_info = {"id": contact_id}
+        else:
+            raise HubSpotError("Either contact_id, contact_name, or contact_email must be provided", "VALIDATION_ERROR")
+
+        # Build task search filters
+        filters = [
+            {
+                "propertyName": "associations.contact",
+                "operator": "EQ",
+                "value": contact_id
+            }
+        ]
+
+        # Filter out completed tasks unless requested
+        if not include_completed:
+            filters.append({
+                "propertyName": "hs_task_status",
+                "operator": "NEQ",
+                "value": "COMPLETED"
+            })
+
+        search_data = {
+            "filterGroups": [{"filters": filters}],
+            "properties": [
+                "hs_task_subject",
+                "hs_task_body",
+                "hs_task_status",
+                "hs_task_priority",
+                "hubspot_owner_id",
+                "hs_task_type",
+                "hs_timestamp",
+                "hs_createdate",
+                "hs_task_due_date"
+            ],
+            "sorts": [
+                {
+                    "propertyName": "hs_timestamp",
+                    "direction": "ASCENDING"
+                }
+            ],
+            "limit": min(limit, 100)
+        }
+
+        endpoint = "/crm/v3/objects/tasks/search"
+        result = await self._make_request("POST", endpoint, data=search_data)
+
+        # Add overdue status to tasks
+        if "results" in result:
+            current_time = datetime.now().timestamp() * 1000
+            for task in result["results"]:
+                task_props = task.get("properties", {})
+                due_date = task_props.get("hs_task_due_date") or task_props.get("hs_timestamp")
+                task["is_overdue"] = False
+                task["overdue_days"] = 0
+
+                if due_date and task_props.get("hs_task_status") not in ["COMPLETED", "DEFERRED"]:
+                    try:
+                        due_date_ms = int(due_date)
+                        if current_time > due_date_ms:
+                            task["is_overdue"] = True
+                            overdue_ms = current_time - due_date_ms
+                            task["overdue_days"] = int(overdue_ms / (24 * 60 * 60 * 1000))
+                    except (ValueError, TypeError):
+                        pass
+
+        result["contact_info"] = contact_info
+        result["total"] = len(result.get("results", []))
+
+        logger.info("Retrieved tasks for contact", contact_id=contact_id, count=result["total"])
+        return result
+
+    async def create_meeting(
+        self,
+        title: str,
+        start_time: str,
+        end_time: Optional[str] = None,
+        description: Optional[str] = None,
+        owner_id: Optional[str] = None,
+        outcome: Optional[str] = None,
+        location: Optional[str] = None,
+        contact_ids: Optional[List[str]] = None,
+        deal_ids: Optional[List[str]] = None,
+        meeting_type: Optional[str] = "Workshop",  # Changed from None to "Workshop"
+        internal_notes: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a new meeting with associations to contacts and deals.
+
+        Args:
+            title: Meeting title/name (required)
+            start_time: Meeting start time in ISO format (required)
+            end_time: Meeting end time in ISO format (optional)
+            description: Meeting description/body (optional)
+            owner_id: HubSpot owner ID for the meeting creator (optional)
+            outcome: Meeting outcome - SCHEDULED, COMPLETED, RESCHEDULED, NO_SHOW, CANCELED (optional)
+            location: Meeting location - physical address, conference room, or call details (optional)
+            contact_ids: List of contact IDs to associate with the meeting (optional)
+            deal_ids: List of deal IDs to associate with the meeting (optional)
+            meeting_type: Type of meeting - must match a configured type in HubSpot. 
+                        Valid option: "Workshop". 
+                        Defaults to "Workshop" if not specified.
+            internal_notes: Internal team notes about the meeting (optional)
+
+        Returns:
+            Created meeting object with ID and all properties
+        """
+        logger.info("Creating meeting", title=title, start_time=start_time)
+
+        # Convert ISO date to timestamp (milliseconds)
+        timestamp_ms = self._convert_iso_to_timestamp(start_time)
+
+        # Build meeting properties
+        properties = {
+            "hs_timestamp": str(timestamp_ms),
+            "hs_meeting_start_time": str(timestamp_ms),
+            "hs_meeting_title": title,
+        }
+
+        if end_time:
+            end_timestamp_ms = self._convert_iso_to_timestamp(end_time)
+            properties["hs_meeting_end_time"] = str(end_timestamp_ms)
+
+        if description:
+            properties["hs_meeting_body"] = description
+
+        if owner_id:
+            properties["hubspot_owner_id"] = owner_id
+
+        if outcome:
+            properties["hs_meeting_outcome"] = outcome
+
+        if location:
+            properties["hs_meeting_location"] = location
+
+        if meeting_type:
+            properties["hs_activity_type"] = meeting_type
+
+        if internal_notes:
+            properties["hs_internal_meeting_notes"] = internal_notes
+
+        # Build associations
+        associations = []
+
+        # Associate with contacts
+        if contact_ids:
+            for contact_id in contact_ids:
+                associations.append({
+                    "to": {"id": contact_id},
+                    "types": [{
+                        "associationCategory": "HUBSPOT_DEFINED",
+                        "associationTypeId": 200  # Meeting to contact association
+                    }]
+                })
+
+        # Associate with deals
+        if deal_ids:
+            for deal_id in deal_ids:
+                associations.append({
+                    "to": {"id": deal_id},
+                    "types": [{
+                        "associationCategory": "HUBSPOT_DEFINED",
+                        "associationTypeId": 212  # Meeting to deal association
+                    }]
+                })
+
+        data = {
+            "properties": properties,
+            "associations": associations
+        }
+
+        endpoint = "/crm/v3/objects/meetings"
+        result = await self._make_request("POST", endpoint, data=data)
+
+        logger.info("Created meeting", meeting_id=result.get("id"), title=title)
         return result
 
     async def close(self):

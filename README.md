@@ -6,9 +6,11 @@ A standalone MCP (Model Context Protocol) server that extends HubSpot functional
 
 This server provides access to:
 - **Meeting Details**: Retrieve complete meeting information including descriptions and properties
+- **Meeting Creation**: Create new meetings with associations to deals and contacts
 - **Deal Meetings**: Get all meetings associated with deals, with filtering and sorting
 - **Deal Notes**: Get all notes associated with specific deals, sorted by timestamp
-- **Task Management**: Create, retrieve, complete, and manage tasks with proper associations
+- **Task Management**: Create, retrieve, update, complete, and manage tasks with proper associations
+- **Task Lookup**: Find tasks by deal or contact with fuzzy name matching support
 - **Overdue Tasks**: Efficiently retrieve overdue tasks with owner filtering
 - **Meeting Search**: Search meetings by keywords in descriptions
 - **Filtering & Sorting**: Advanced filtering by outcome, exclude Calendly meetings, sort by date
@@ -48,6 +50,7 @@ pip install -r requirements.txt
    - `crm.objects.contacts.read`
    - `crm.objects.deals.read`
    - `crm.objects.meetings.read`
+   - `crm.objects.meetings.write`
    - `crm.objects.notes.read`
    - `crm.objects.tasks.read`
    - `crm.objects.tasks.write`
@@ -118,14 +121,34 @@ Retrieve complete meeting information.
 - `meeting_id` (required): HubSpot meeting ID
 - `properties` (optional): Array of specific properties to retrieve
 
-### 2. `get_deal_notes`
+### 2. `create_meeting`
+Create a new meeting with associations to contacts and deals.
+
+**Parameters:**
+- `title` (required): Meeting title/name
+- `start_time` (required): Meeting start time in ISO format (e.g., "2025-10-30T14:00:00Z")
+- `end_time` (optional): Meeting end time in ISO format
+- `description` (optional): Meeting description/body
+- `owner_id` (optional): HubSpot owner ID for the meeting creator
+- `outcome` (optional): Meeting outcome (SCHEDULED, COMPLETED, RESCHEDULED, NO_SHOW, CANCELED)
+- `location` (optional): Meeting location
+- `contact_ids` (optional): List of contact IDs to associate with the meeting
+- `deal_ids` (optional): List of deal IDs to associate with the meeting
+- `meeting_type` (optional): Type of meeting based on account meeting types
+- `internal_notes` (optional): Internal team notes about the meeting
+
+**Examples:**
+- Create simple meeting: `title="Client Call", start_time="2025-10-30T14:00:00Z"`
+- Create with associations: `title="Sales Meeting", start_time="2025-10-30T14:00:00Z", deal_ids=["12345"], contact_ids=["67890"]`
+
+### 3. `get_deal_notes`
 Get all notes associated with a specific deal.
 
 **Parameters:**
 - `deal_id` (required): HubSpot deal ID
 - `limit` (optional): Number of notes to retrieve (default: 100)
 
-### 3. `create_task`
+### 4. `create_task`
 Create a new task with associations to contacts and deals.
 
 **Parameters:**
@@ -138,7 +161,7 @@ Create a new task with associations to contacts and deals.
 - `deal_id` (optional): Deal ID to associate with
 - `task_type` (optional): TODO, CALL, EMAIL, etc.
 
-### 4. `get_tasks`
+### 5. `get_tasks`
 Retrieve tasks with optional filtering.
 
 **Parameters:**
@@ -148,14 +171,14 @@ Retrieve tasks with optional filtering.
 - `status` (optional): Filter by task status
 - `limit` (optional): Number of tasks to retrieve (default: 100)
 
-### 5. `get_task_details`
+### 6. `get_task_details`
 Get detailed information for a specific task.
 
 **Parameters:**
 - `task_id` (required): HubSpot task ID
 - `properties` (optional): Array of specific properties to retrieve
 
-### 6. `complete_task`
+### 7. `complete_task`
 Mark a task as completed.
 
 **Parameters:**
@@ -163,7 +186,25 @@ Mark a task as completed.
 - `completion_notes` (optional): Notes about the completion
 - `update_properties` (optional): Additional properties to update
 
-### 7. `get_deal_meetings`
+### 8. `update_task`
+Update an existing task with new property values.
+
+**Parameters:**
+- `task_id` (required): HubSpot task ID
+- `title` (optional): New task title
+- `description` (optional): New task description/notes
+- `status` (optional): Task status (NOT_STARTED, IN_PROGRESS, COMPLETED, WAITING, DEFERRED)
+- `priority` (optional): Task priority (HIGH, MEDIUM, LOW)
+- `assigned_to_user_id` (optional): HubSpot user ID to reassign task to
+- `due_date` (optional): New due date in ISO format
+- `task_type` (optional): Type of task (TODO, CALL, EMAIL, etc.)
+
+**Examples:**
+- Update title: `task_id="123", title="Follow up with client"`
+- Change priority: `task_id="123", priority="HIGH", status="IN_PROGRESS"`
+- Reassign task: `task_id="123", assigned_to_user_id="456"`
+
+### 9. `get_deal_meetings`
 Retrieve all meetings associated with a deal, with filtering and sorting.
 
 **Parameters:**
@@ -173,20 +214,48 @@ Retrieve all meetings associated with a deal, with filtering and sorting.
 - `exclude_calendly` (optional): Exclude automated Calendly meetings
 - `sort_direction` (optional): "DESCENDING" (newest first, default) or "ASCENDING"
 
-### 8. `get_overdue_tasks`
+### 10. `get_overdue_tasks`
 Efficiently retrieve overdue tasks.
 
 **Parameters:**
 - `owner_id` (optional): Filter by task owner
 - `limit` (optional): Number of tasks to return (default: 100)
 
-### 9. `search_meetings`
+### 11. `search_meetings`
 Search meetings by keywords in descriptions.
 
 **Parameters:**
 - `search_term` (required): Term to search for
 - `limit` (optional): Number of results (default: 10, max: 100)
 - `sort_direction` (optional): "DESCENDING" (newest first, default) or "ASCENDING"
+
+### 12. `get_tasks_for_deal`
+Get all tasks associated with a specific deal using ID or fuzzy name matching.
+
+**Parameters:**
+- `deal_id` (optional): HubSpot deal ID
+- `deal_name` (optional): Deal name for fuzzy search (e.g., "Delta Dental")
+- `include_completed` (optional): Include completed tasks (default: False)
+- `limit` (optional): Number of tasks to retrieve (default: 100)
+
+**Examples:**
+- Get pending tasks: `deal_name="Delta Dental"`
+- Get all tasks by ID: `deal_id="38702133148", include_completed=True`
+
+### 13. `get_tasks_for_contact`
+Get all tasks associated with a specific contact using ID, name, or email.
+
+**Parameters:**
+- `contact_id` (optional): HubSpot contact ID
+- `contact_name` (optional): Contact name for fuzzy search
+- `contact_email` (optional): Contact email for exact match
+- `include_completed` (optional): Include completed tasks (default: False)
+- `limit` (optional): Number of tasks to retrieve (default: 100)
+
+**Examples:**
+- Get tasks by name: `contact_name="John Smith"`
+- Get tasks by email: `contact_email="john@example.com"`
+- Get all tasks by ID: `contact_id="122794298695", include_completed=True`
 
 ## Configuration
 
