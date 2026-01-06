@@ -299,7 +299,3 @@ To share this MCP server:
 2. **Share the ZIP** with other users
 3. **Provide instructions**: Share this README with installation steps
 4. **Note**: Each user needs their own HubSpot private app token
-
-## License
-
-MIT License (or your preferred license)
