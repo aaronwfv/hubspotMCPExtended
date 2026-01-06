@@ -30,3 +30,17 @@ Thumbs.db
 
 # Test files
 test_*.py
+
+# Claude Code files
+CLAUDE.md
+.claude/
+
+# Docker files (local development)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Runtime files
+stderr.txt
+stdout.txt
+test_mcp.json
