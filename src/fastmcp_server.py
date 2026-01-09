@@ -338,7 +338,12 @@ async def get_overdue_tasks(
 
     Returns:
         Collection of overdue tasks with titles, descriptions, status, priority, due dates,
-        and calculated overdue days. Only returns tasks that are actually overdue.
+        calculated overdue days, and associations. Each task includes:
+        - is_overdue: Always True for results from this endpoint
+        - overdue_days: Number of days past due
+        - associations: Object containing:
+          - deals: Array of {id, name} for associated deals
+          - contacts: Array of {id, name, email} for associated contacts
     """
     return await hubspot_client.get_overdue_tasks(owner_id, limit)
 

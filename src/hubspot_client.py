@@ -468,6 +468,109 @@ class HubSpotClient:
                    overdue_count=len([t for t in result.get("results", []) if t.get("is_overdue", False)]))
         return result
 
+    async def _enrich_tasks_with_associations(
+        self,
+        tasks: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Enrich tasks with associated deal and contact details.
+
+        For each task, fetches associations and then batch-fetches deal names
+        and contact names to provide full context.
+        """
+        if not tasks:
+            return tasks
+
+        # Collect associations for each task
+        task_associations: Dict[str, Dict[str, List[str]]] = {}
+        all_deal_ids: set = set()
+        all_contact_ids: set = set()
+
+        for task in tasks:
+            task_id = task.get("id")
+            if not task_id:
+                continue
+
+            task_associations[task_id] = {"deal_ids": [], "contact_ids": []}
+
+            # Fetch deal associations for this task
+            try:
+                deal_assoc_endpoint = f"/crm/v4/objects/task/{task_id}/associations/deal"
+                deal_assoc_result = await self._make_request("GET", deal_assoc_endpoint)
+                # Convert to strings for consistent lookup (batch read returns string IDs)
+                deal_ids = [str(assoc["toObjectId"]) for assoc in deal_assoc_result.get("results", [])]
+                task_associations[task_id]["deal_ids"] = deal_ids
+                all_deal_ids.update(deal_ids)
+            except HubSpotError as e:
+                logger.warning("Failed to fetch deal associations for task", task_id=task_id, error=str(e))
+
+            # Fetch contact associations for this task
+            try:
+                contact_assoc_endpoint = f"/crm/v4/objects/task/{task_id}/associations/contact"
+                contact_assoc_result = await self._make_request("GET", contact_assoc_endpoint)
+                # Convert to strings for consistent lookup (batch read returns string IDs)
+                contact_ids = [str(assoc["toObjectId"]) for assoc in contact_assoc_result.get("results", [])]
+                task_associations[task_id]["contact_ids"] = contact_ids
+                all_contact_ids.update(contact_ids)
+            except HubSpotError as e:
+                logger.warning("Failed to fetch contact associations for task", task_id=task_id, error=str(e))
+
+        # Batch fetch deal details
+        deal_details: Dict[str, Dict[str, Any]] = {}
+        if all_deal_ids:
+            try:
+                batch_data = {
+                    "inputs": [{"id": deal_id} for deal_id in all_deal_ids],
+                    "properties": ["dealname"]
+                }
+                endpoint = "/crm/v3/objects/deals/batch/read"
+                batch_result = await self._make_request("POST", endpoint, data=batch_data)
+                for deal in batch_result.get("results", []):
+                    deal_id = deal.get("id")
+                    deal_name = deal.get("properties", {}).get("dealname", "")
+                    deal_details[deal_id] = {"id": deal_id, "name": deal_name}
+            except HubSpotError as e:
+                logger.warning("Failed to batch fetch deal details", error=str(e))
+
+        # Batch fetch contact details
+        contact_details: Dict[str, Dict[str, Any]] = {}
+        if all_contact_ids:
+            try:
+                batch_data = {
+                    "inputs": [{"id": contact_id} for contact_id in all_contact_ids],
+                    "properties": ["firstname", "lastname", "email"]
+                }
+                endpoint = "/crm/v3/objects/contacts/batch/read"
+                batch_result = await self._make_request("POST", endpoint, data=batch_data)
+                for contact in batch_result.get("results", []):
+                    contact_id = contact.get("id")
+                    props = contact.get("properties", {})
+                    firstname = props.get("firstname", "") or ""
+                    lastname = props.get("lastname", "") or ""
+                    name = f"{firstname} {lastname}".strip()
+                    email = props.get("email", "")
+                    contact_details[contact_id] = {"id": contact_id, "name": name, "email": email}
+            except HubSpotError as e:
+                logger.warning("Failed to batch fetch contact details", error=str(e))
+
+        # Attach enriched associations to each task
+        for task in tasks:
+            task_id = task.get("id")
+            if task_id and task_id in task_associations:
+                assoc = task_associations[task_id]
+                task["associations"] = {
+                    "deals": [deal_details.get(did, {"id": did, "name": ""}) for did in assoc["deal_ids"]],
+                    "contacts": [contact_details.get(cid, {"id": cid, "name": "", "email": ""}) for cid in assoc["contact_ids"]]
+                }
+            else:
+                task["associations"] = {"deals": [], "contacts": []}
+
+        logger.info("Enriched tasks with associations",
+                   task_count=len(tasks),
+                   deals_fetched=len(deal_details),
+                   contacts_fetched=len(contact_details))
+        return tasks
+
     async def get_overdue_tasks(
         self,
         owner_id: Optional[str] = None,
@@ -550,6 +653,10 @@ class HubSpotClient:
                         task["overdue_days"] = int(overdue_ms / (24 * 60 * 60 * 1000))
                     except (ValueError, TypeError):
                         pass
+
+        # Enrich tasks with association details (deal names, contact names)
+        if result.get("results"):
+            result["results"] = await self._enrich_tasks_with_associations(result["results"])
 
         logger.info("Retrieved overdue tasks", count=len(result.get("results", [])))
         return result
