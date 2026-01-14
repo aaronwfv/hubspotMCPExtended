@@ -320,6 +320,85 @@ class HubSpotClient:
         logger.info("Created task", task_id=result.get("id"), title=title)
         return result
 
+    async def create_note(
+        self,
+        content: str,
+        owner_id: Optional[str] = None,
+        timestamp: Optional[str] = None,
+        contact_id: Optional[str] = None,
+        deal_id: Optional[str] = None,
+        company_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a new note with optional associations to contacts, deals, and companies.
+
+        Args:
+            content: The note body/content (required)
+            owner_id: HubSpot owner ID for the note creator (optional)
+            timestamp: Note timestamp in ISO format (optional, defaults to creation time)
+            contact_id: Contact ID to associate with (optional)
+            deal_id: Deal ID to associate with (optional)
+            company_id: Company ID to associate with (optional)
+
+        Returns:
+            Created note object with ID and all properties
+        """
+        logger.info("Creating note", has_owner=bool(owner_id))
+
+        # Build note properties
+        properties = {
+            "hs_note_body": content,
+        }
+
+        if owner_id:
+            properties["hubspot_owner_id"] = owner_id
+
+        # Timestamp is required by HubSpot - default to current time if not provided
+        if timestamp:
+            properties["hs_timestamp"] = str(self._convert_iso_to_timestamp(timestamp))
+        else:
+            properties["hs_timestamp"] = str(int(datetime.now().timestamp() * 1000))
+
+        # Build associations
+        associations = []
+        if contact_id:
+            associations.append({
+                "to": {"id": contact_id},
+                "types": [{
+                    "associationCategory": "HUBSPOT_DEFINED",
+                    "associationTypeId": 202  # Note to contact
+                }]
+            })
+
+        if deal_id:
+            associations.append({
+                "to": {"id": deal_id},
+                "types": [{
+                    "associationCategory": "HUBSPOT_DEFINED",
+                    "associationTypeId": 214  # Note to deal
+                }]
+            })
+
+        if company_id:
+            associations.append({
+                "to": {"id": company_id},
+                "types": [{
+                    "associationCategory": "HUBSPOT_DEFINED",
+                    "associationTypeId": 190  # Note to company
+                }]
+            })
+
+        data = {
+            "properties": properties,
+            "associations": associations
+        }
+
+        endpoint = "/crm/v3/objects/notes"
+        result = await self._make_request("POST", endpoint, data=data)
+
+        logger.info("Created note", note_id=result.get("id"))
+        return result
+
     async def get_tasks(
         self,
         owner_id: Optional[str] = None,
@@ -785,6 +864,55 @@ class HubSpotClient:
         result = await self._make_request("PATCH", endpoint, data=data)
 
         logger.info("Updated task", task_id=task_id, updated_properties=list(properties.keys()))
+        return result
+
+    async def update_note(
+        self,
+        note_id: str,
+        content: Optional[str] = None,
+        owner_id: Optional[str] = None,
+        timestamp: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Update an existing note with new property values.
+
+        Args:
+            note_id: The HubSpot note ID to update (required)
+            content: New note body/content (optional)
+            owner_id: New HubSpot owner ID (optional)
+            timestamp: New timestamp in ISO format (optional)
+
+        Returns:
+            Updated note object with new property values
+
+        Examples:
+            - Update content: note_id="123", content="Updated note text"
+            - Change owner: note_id="123", owner_id="456"
+        """
+        logger.info("Updating note", note_id=note_id)
+
+        # Build properties to update
+        properties = {}
+
+        if content is not None:
+            properties["hs_note_body"] = content
+        if owner_id is not None:
+            properties["hubspot_owner_id"] = owner_id
+        if timestamp is not None:
+            properties["hs_timestamp"] = str(self._convert_iso_to_timestamp(timestamp))
+
+        # Ensure we have at least one property to update
+        if not properties:
+            raise HubSpotError("At least one property must be provided to update", "VALIDATION_ERROR")
+
+        data = {
+            "properties": properties
+        }
+
+        endpoint = f"/crm/v3/objects/notes/{note_id}"
+        result = await self._make_request("PATCH", endpoint, data=data)
+
+        logger.info("Updated note", note_id=note_id, updated_properties=list(properties.keys()))
         return result
 
     async def get_deal_meetings(

@@ -118,6 +118,78 @@ async def get_deal_notes(
 
 
 @mcp.tool()
+async def create_note(
+    content: str,
+    owner_id: Optional[str] = None,
+    timestamp: Optional[str] = None,
+    contact_id: Optional[str] = None,
+    deal_id: Optional[str] = None,
+    company_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Create a new note with optional associations to contacts, deals, and companies.
+
+    Args:
+        content: The note body/content (required)
+        owner_id: HubSpot owner ID for the note creator (optional)
+        timestamp: Note timestamp in ISO format (e.g., "2025-10-30T14:00:00Z") (optional, defaults to creation time)
+        contact_id: Contact ID to associate the note with (optional)
+        deal_id: Deal ID to associate the note with (optional)
+        company_id: Company ID to associate the note with (optional)
+
+    Returns:
+        Created note object with ID and all properties
+
+    Examples:
+        - Simple note: content="Meeting follow-up notes..."
+        - Note with deal association: content="Call summary", deal_id="12345"
+        - Note with multiple associations: content="Discussion notes", contact_id="111", deal_id="222"
+    """
+    return await hubspot_client.create_note(
+        content=content,
+        owner_id=owner_id,
+        timestamp=timestamp,
+        contact_id=contact_id,
+        deal_id=deal_id,
+        company_id=company_id
+    )
+
+
+@mcp.tool()
+async def update_note(
+    note_id: str,
+    content: Optional[str] = None,
+    owner_id: Optional[str] = None,
+    timestamp: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Update an existing HubSpot note with new property values.
+
+    Args:
+        note_id: The HubSpot note ID to update (required)
+        content: New note body/content (optional)
+        owner_id: New HubSpot owner ID to reassign the note to (optional)
+        timestamp: New timestamp in ISO format (e.g., "2025-10-30T14:00:00Z") (optional)
+
+    Returns:
+        Updated note object with new property values
+
+    Examples:
+        - Update content: note_id="123456789", content="Updated meeting notes with action items"
+        - Change owner: note_id="123456789", owner_id="987654321"
+        - Update timestamp: note_id="123456789", timestamp="2025-11-01T09:00:00Z"
+
+    Note: At least one optional parameter must be provided.
+    """
+    return await hubspot_client.update_note(
+        note_id=note_id,
+        content=content,
+        owner_id=owner_id,
+        timestamp=timestamp
+    )
+
+
+@mcp.tool()
 async def create_task(
     title: str,
     assigned_to_user_id: str,
